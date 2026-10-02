@@ -176,6 +176,10 @@ function loadBundle() {
   let notifyDelivers = true
   // Every browser-API notification the client constructed, so the fallback is observable.
   const notifications = []
+  // The dictionaries the plugin registered with the locale service, and which locale is
+  // active — a language switch has to reach the text without a reload.
+  const registered = new Map()
+  let activeLocale = 'zh'
   // Every `location.reload()` the client asked for, and the version stamp of the bundle
   // this page is being served (the boot-graph fetch is what reads it).
   const reloads = []
@@ -399,11 +403,32 @@ function loadBundle() {
   if (entry.id !== 'dsh-task-tracker') throw new Error('unexpected entry id: ' + entry.id)
   const exportsObject = entry.factory(requireStub)
 
-  /** Install the tracker into a stub slot service. */
+  /** Install the tracker into a stub slot service and a stub locale service. */
   const applyTo = () => {
     const injections = []
     const ctx = {
-      locale: { current: 'zh' },
+      effect: (factory) => {
+        const dispose = factory()
+        if (typeof dispose === 'function') notes.push(dispose)
+      },
+      locale: {
+        register: (namespace, dicts) => {
+          registered.set(namespace, dicts)
+          return () => registered.delete(namespace)
+        },
+        // The real service hands back a translator that resolves the key at CALL time
+        // against the active locale chain; the stub must behave the same way, or a test
+        // cannot tell a live translator from a snapshot.
+        bind: (namespace) => (key, params) => {
+          const dicts = registered.get(namespace)
+          const template = dicts?.[activeLocale]?.[key] ?? key
+          return params === undefined || params === null
+            ? template
+            : String(template).replace(/\{(\w+)\}/gu, (match, name) => (name in params ? String(params[name]) : match))
+        },
+        getSnapshot: () => ({ active: activeLocale }),
+        subscribe: () => () => {},
+      },
       slots: {
         inject: (key, callback) => {
           injections.push(key)
@@ -524,6 +549,12 @@ function loadBundle() {
     },
     notifications,
     reloads,
+    /** The dictionaries the plugin registered, by namespace. */
+    registered,
+    /** Switch the stub locale service's active locale, the way the app's setting does. */
+    setActiveLocale: (locale) => {
+      activeLocale = locale
+    },
     /** Set what `/turn` reports as the reason for the finished turn. */
     setTurnEndReason: (value) => {
       turnReason = value
@@ -555,9 +586,31 @@ async function main() {
   assert.ok(Array.isArray(bundle.inject), 'inject must be an array')
   // Text comparison on purpose: the bundle runs in a VM realm, so its Array has a
   // different prototype and a strict deep comparison fails for the wrong reason.
-  assert.equal(bundle.inject.join(','), 'slots', 'inject must stay the known-good minimal set')
+  // `locale` is here because the plugin registers its dictionaries with the Client
+  // locale service instead of sniffing the language once at load.
+  assert.equal(bundle.inject.join(','), 'slots,locale', 'inject must stay the known-good minimal set')
   assert.ok(!/inject:\s*\{/u.test(source), 'inject must not be an object (that blocks web boot)')
   assert.ok(!source.includes('workspaceRegistry'), 'no host-side service may be declared or read')
+})
+
+  await check('registers its dictionaries with the locale service', () => {
+  // Without a registration the framework has nothing to translate with, and the plugin
+  // would keep its own words whatever language the app is set to.
+  const dicts = harness.registered.get('task-tracker')
+  assert.ok(dicts !== undefined, 'the plugin must register under its own namespace')
+  assert.ok(dicts.zh !== undefined && dicts.en !== undefined, 'for both languages, at least')
+  const zhKeys = Object.keys(dicts.zh).sort()
+  const enKeys = Object.keys(dicts.en).sort()
+  assert.deepEqual(enKeys, zhKeys, 'both languages must define exactly the same keys')
+  assert.ok(zhKeys.length > 30, 'and enough of them: ' + zhKeys.length)
+  for (const [key, value] of Object.entries(dicts.zh)) {
+    assert.equal(typeof value, 'string', 'every value is a string, key ' + key)
+  }
+  // Both slot registrations name the same namespace, which is what makes the framework
+  // re-render the composer button when the language changes.
+  for (const cell of cells) {
+    assert.equal(cell.options.locale, 'task-tracker', cell.options.id + ' must declare the namespace')
+  }
 })
 
   await check('keeps the three version stamps in step', () => {
@@ -722,6 +775,47 @@ check('keeps the same hook order whether the data sources are there or not', () 
   assert.equal(usage.tokens, 2100, 'tokens are summed: ' + usage.tokens)
   assert.equal(usage.hit.toFixed(1), '70.0', 'cache hit uses cached / billed input')
   assert.equal(usage.input, 2000, 'billed input excludes output')
+})
+
+  await check('follows a language switch without a reload', () => {
+  // The translator resolves each key at CALL time, so a switch reaches the pane (which is
+  // recomposed every second) and the composer button (a cell whose registration names the
+  // namespace is re-rendered by the framework) with no reload and no re-registration.
+  const test = bundle.__test
+  const sessions = { byId: { s1: { id: 's1', title: 'a session', cwd: 'C:\\p' } } }
+  const collected = test.collect(sessions, undefined, { items: [], archivedSessionIds: [] })
+  test.shared.currentSessionId = 's1'
+  test.navigate({ level: 'session', cwd: 'C:\\p', sessionId: 's1' })
+  const view = () => test.composeView(collected, 's1', {
+    todos: [{ content: 'a task', status: 'completed' }],
+    tokenUsage: { uncachedInputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0, outputTokens: 10 },
+    sessionStats: { turn: 3, steps: 42 },
+  })
+
+  harness.setActiveLocale('zh')
+  const zh = view()
+  assert.equal(zh.header.subtitle, '当前状态', 'Chinese by default: ' + zh.header.subtitle)
+  assert.equal(zh.progress.text, '1/1 已完成', 'including the counted progress phrase')
+  const zhState = zh.sections.find((section) => section.key === 'state')
+  assert.equal(zhState.rows[zhState.rows.length - 1].meta, '第 3 轮 · 累计 42 步', 'and the state counters')
+
+  harness.setActiveLocale('en')
+  const en = view()
+  assert.equal(en.header.subtitle, 'State', 'English after the switch: ' + en.header.subtitle)
+  assert.equal(en.progress.text, '1/1 done', 'including the counted progress phrase')
+  const enState = en.sections.find((section) => section.key === 'state')
+  assert.equal(enState.rows[enState.rows.length - 1].meta, 'turn 3 · 42 steps', 'and the state counters')
+
+  // Token scales are language data: the unit AND its threshold differ, so the same number
+  // reads as 亿/万 in Chinese and as M/B in English.
+  assert.equal(test.tokenText(420000000), '420M', 'English counts in M')
+  assert.equal(test.tokenText(1200000000), '1.20B', 'and in B')
+  assert.equal(test.durationText(83000), '1m 23s', 'and durations read in English units')
+  harness.setActiveLocale('zh')
+  assert.equal(test.tokenText(420000000), '4.20亿', 'Chinese counts in 亿')
+  assert.equal(test.tokenText(1200000000), '12.00亿', 'at a different threshold')
+  assert.equal(test.durationText(83000), '1 分 23 秒', 'and durations keep their spaces')
+  test.navigate({ level: 'projects' })
 })
 
   await check('hides child agents and blank shells', () => {
