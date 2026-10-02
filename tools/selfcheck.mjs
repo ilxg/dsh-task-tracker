@@ -1548,6 +1548,19 @@ check('keeps the same hook order whether the data sources are there or not', () 
   harness.context.sessionStorage.removeItem(marker)
 })
 
+  await check('keeps an embedded pane inside its own card', () => {
+  // A plain `position: fixed` ancestor is NOT a containing block for fixed-position
+  // descendants, so a panel root declared `fixed; inset: 0` resolves against the VIEWPORT
+  // and covers the whole app window instead of the 380px card it was drawn into. That is
+  // invisible in the harness's layout-free DOM, so the choice itself is asserted.
+  const view = panelView()
+  const detached = harness.bundle.__test.buildPanel(view, fakeDocument(), { closable: false })
+  assert.equal(detached.style.position, 'fixed', 'a document of its own fills with fixed')
+  const embedded = harness.bundle.__test.buildPanel(view, fakeDocument(), { closable: true, contained: true })
+  assert.equal(embedded.style.position, 'absolute', 'an embedded pane is laid out inside its card')
+  assert.equal(embedded.style.inset, '0', 'and still fills that card')
+})
+
   await check('offers the footer actions, and sync reloads only for a different bundle', async () => {
   // 同步更新 asks the host which bundle is on disk — the page cannot find that out for
   // itself, its own bundle URL being on the app's custom scheme — and 独立窗口 / 嵌回窗口
