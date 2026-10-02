@@ -1,0 +1,11 @@
+# dsh-task-tracker 的 bundle patch：把这一行挂进任何 profile 层栈。
+# host 半侧只起一个绑定在 127.0.0.1 的本机服务（可选窗口 + 原生通知），
+# 不注册任何插槽；浏览器半侧注册输入框左侧的按钮（conversation.input.left）
+# 与通知监视器（shell.overlay）。
+# profile 自己的 cordis.patch.yml 仍可用同一个 id 覆盖这一行。
+# 注意：让一个"已经在运行"的 DSH 立刻用上 host 半侧，需要在 profile 里额外插入
+# `name: dsh-task-tracker/window` 那一行（同一个文件，靠 URL 不同绕过 ESM 缓存）；
+# tools/install.mjs 会把两行一起写入，详见 README 的"安装"一节。
+- insert:
+    - id: task-tracker
+      name: dsh-task-tracker

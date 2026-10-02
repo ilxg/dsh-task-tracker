@@ -1,0 +1,26 @@
+# Local-only material: this machine's backups, screenshots, reports and the
+# forensics scripts that are about THIS setup rather than about the plugin.
+# They stay on disk; they are simply not part of the published package.
+
+# Old bundles kept for comparison while rewriting the client.
+legacy/
+_shots/
+REPORT-*.md
+lib/*.bak
+
+# Forensics aimed at one machine's profile, caches and third-party providers.
+tools/_probe.mjs
+tools/balance.mjs
+tools/cache-bundles.mjs
+tools/gate-probe.mjs
+tools/profile-fix.mjs
+tools/service-list.mjs
+tools/toast-debug.mjs
+
+# Never publish dependencies or editor/OS noise.
+node_modules/
+*.log
+*.tmp
+Thumbs.db
+desktop.ini
+.DS_Store

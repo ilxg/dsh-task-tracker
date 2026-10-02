@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 16 16" fill="none" role="img" aria-label="Task tracker">
+  <rect x="0.75" y="0.75" width="14.5" height="14.5" rx="3.25" fill="#4d6bfe" fill-opacity="0.12" stroke="#4d6bfe" stroke-width="1.5"/>
+  <path d="M3.6 5.1l1.15 1.15L6.9 4.1" stroke="#4d6bfe" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M3.6 10.9l1.15 1.15L6.9 9.9" stroke="#4d6bfe" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8.9 5.3h3.5" stroke="#4d6bfe" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M8.9 11.1h3.5" stroke="#4d6bfe" stroke-width="1.4" stroke-linecap="round"/>
+</svg>

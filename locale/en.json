@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task tracker",
+    "description": "A task panel button beside the composer, a standalone task window, and a native notification when a run finishes, fails or waits for you. A stop you asked for stays silent."
+  }
+}
