@@ -970,6 +970,21 @@ check('keeps the same hook order whether the data sources are there or not', () 
   for (const key of ['base', 'panel', 'fg', 'muted', 'accent', 'success', 'danger', 'warn']) {
     assert.ok(/^#[0-9a-f]{6}$/iu.test(palette[key]), key + ' must be an opaque hex colour, got ' + palette[key])
   }
+
+  // The same hairline rule has to hold on a LIGHT theme: a stroke brighter than its
+  // backdrop is as wrong there as a white line on a dark one, and which neutral to use is
+  // decided by the backdrop's own luminance rather than by a fixed assumption.
+  assert.equal(test.solid('#ffffff', '#1d1d20', 0.14), 'rgba(255,255,255,0.14)', 'white is dropped on a dark base')
+  assert.equal(test.solid('#000000', '#f8f9fa', 0.14), 'rgba(0,0,0,0.14)', 'black is dropped on a light base')
+  assert.equal(test.solid('#f8f9fa', '#f8f9fa', 0.14), 'rgba(0,0,0,0.14)', 'a stroke equal to its base is dropped')
+  assert.equal(test.solid('#4d6bfe', '#f8f9fa', 0.14), '#4d6bfe', 'a real accent survives on light')
+  assert.equal(test.solid('#4d6bfe', '#1d1d20', 0.14), '#4d6bfe', 'and on dark')
+
+  // The host window page takes its colour scheme and scrollbars from the same theme the
+  // pane composes, so a light app gets a light window rather than a dark frame.
+  const page = pageHtml()
+  assert.ok(page.includes('theme.dark ? "dark" : "light"'), 'the window page follows the theme for color-scheme')
+  assert.ok(page.includes('scroll-thumb'), 'and themes its scrollbars from it')
 })
 
   await check('composes todos, token usage and the run state into sections', () => {

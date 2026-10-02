@@ -83,7 +83,12 @@ const PATCHED_HANDLER = `\twindow.webContents.setWindowOpenHandler(({ url, frame
 \t\t\t\tminHeight: 320,
 \t\t\t\tautoHideMenuBar: true,
 \t\t\t\ttitle: "任务追踪",
-\t\t\t\tbackgroundColor: "#151517"
+\t\t\t\tbackgroundColor: "#151517",
+\t\t\t\t// Stay above other applications, so watching a run while working
+\t\t\t\t// elsewhere does not mean losing the window behind them. Minimizing is
+\t\t\t\t// still the user's own decision and behaves normally — a minimized
+\t\t\t\t// window is not in anybody's way.
+\t\t\t\talwaysOnTop: true
 \t\t\t}
 \t\t};
 \t\tif (["http:", "https:"].includes(new URL(url).protocol)) shell.openExternal(url);
@@ -368,18 +373,49 @@ async function revert({ wait }) {
   }
 }
 
+/** Whether the INSTALLED archive already carries the patch. */
+function installedIsPatched() {
+  if (!existsSync(asarPath)) return false
+  const archive = openAsar(asarPath)
+  try {
+    const entry = findEntry(archive.header, 'lib/main.js')
+    return entry !== undefined && readEntry(archive, entry).toString('utf8').includes(MARKER)
+  } finally {
+    closeAsar(archive)
+  }
+}
+
+/**
+ * The archive to patch FROM.
+ *
+ * Re-patching needs the PRISTINE archive: the installed one already carries the previous
+ * patch, so the shipped handler this patch matches on is gone and a build would fail with
+ * "found 0". The backup the first apply made is exactly that pristine archive, so it is
+ * the source whenever the installed one is patched — which is the normal state after any
+ * change to this patch, or after an app update restored the archive.
+ * @returns the path to read.
+ */
+function buildSource() {
+  if (existsSync(backupPath) && installedIsPatched()) {
+    console.log('source         : ' + backupPath + ' (the installed archive is already patched)')
+    return backupPath
+  }
+  return asarPath
+}
+
 //#region command line
 try {
   if (process.argv.includes('--status')) {
     status()
   } else if (process.argv.includes('--build')) {
-    const summary = build(asarPath, patchedPath)
+    const source = buildSource()
+    const summary = build(source, patchedPath)
     console.log('built: ' + patchedPath)
     console.log(JSON.stringify(summary, null, 1))
-    console.log('verify: ' + JSON.stringify(verify(asarPath, patchedPath)))
+    console.log('verify: ' + JSON.stringify(verify(source, patchedPath)))
   } else if (process.argv.includes('--verify')) {
     const candidate = argument('--verify', patchedPath)
-    console.log('verify: ' + JSON.stringify(verify(asarPath, candidate === true ? patchedPath : candidate)))
+    console.log('verify: ' + JSON.stringify(verify(buildSource(), candidate === true ? patchedPath : candidate)))
   } else if (process.argv.includes('--apply')) {
     await apply({ wait: process.argv.includes('--wait') })
   } else if (process.argv.includes('--revert')) {
