@@ -1003,15 +1003,6 @@ check('keeps the same hook order whether the data sources are there or not', () 
   assert.ok(tokens.rows.some((row) => row.meta === '75.0%'), 'the cache rate is exact: ' + tokens.rows.map((row) => row.meta).join(' | '))
 })
 
-  await check('opens the app window on the marker URL the shell allows', () => {
-  const node = renderCell('conversation.input.left', slotProps({
-    useSessionStatus: (select) => select({ get: () => ({ running: false, pendingInteraction: null }) }),
-  }))
-  node.props.onClick()
-  assert.equal(opened.length, 1, 'one window was requested')
-  assert.equal(opened[0].url, 'about:blank#dsh-task-tracker', 'the marker URL: ' + opened[0].url)
-  assert.equal(opened[0].name, 'dsh-task-tracker-window', 'with a stable window name')
-})
 //#endregion
 
 //#region feeds
@@ -1357,27 +1348,52 @@ check('keeps the same hook order whether the data sources are there or not', () 
   assert.ok(groups.length > 0, 'the values are wrapped in a group container')
 })
 
-  await check('toggles the pane instead of stacking a blank window per click', () => {
-  // `window.open(url, "same-name")` returns a NEW blank window for a name that already
-  // exists, so opening on every click left one empty frame per click — and the user was
-  // left looking at the fallback panel while those stacked behind it.
+  await check('opens the pane inside the app, and detaches on demand', () => {
+  // The composer button must NOT create an OS window: the pane belongs to the app, so it
+  // cannot be dragged out of the window and needs no second process. Leaving the app is a
+  // deliberate step, taken with the footer's 独立窗口 button.
   const test = harness.bundle.__test
   test.closeWindow()
   opened.length = 0
-  const first = test.toggleWindow()
-  assert.equal(first, true, 'the first call opens')
-  assert.equal(opened.length, 1, 'and requests exactly one window')
-  const popup = opened[0].window
-  const second = test.toggleWindow()
-  assert.equal(second, false, 'the second call closes')
-  assert.equal(opened.length, 1, 'without requesting another one')
-  assert.equal(popup.closed, true, 'and it really closed the window it opened')
-  const third = test.toggleWindow()
-  assert.equal(third, true, 'and a third call opens again')
-  assert.equal(opened.length, 2, 'one request per open')
-  // Opening starts at the project list, whatever the pane was showing before: the
-  // window says it opens as the two-level monitor, and reopening onto an old
-  // conversation's detail is what "点进去显示的不是该项目的详情" described.
+  const node = renderCell('conversation.input.left', slotProps({
+    useSessionStatus: (select) => select({ get: () => ({ running: false, pendingInteraction: null }) }),
+  }))
+  node.props.onClick()
+  assert.equal(opened.length, 0, 'the button creates no window: ' + String(opened.length))
+  assert.equal(test.shared.popupMode, 'panel', 'it docks the pane instead: ' + String(test.shared.popupMode))
+  assert.equal(test.isWindowOpen(), true, 'and the pane counts as open')
+
+  // Detaching creates the app-owned window on the marker URL the shell allows.
+  test.runAction('detach')
+  assert.equal(opened.length, 1, 'the detach action asks for one window')
+  assert.equal(opened[0].url, 'about:blank#dsh-task-tracker', 'the marker URL: ' + opened[0].url)
+  assert.equal(opened[0].name, 'dsh-task-tracker-window', 'with a stable window name')
+  assert.equal(test.shared.popupMode, 'popup', 'and the pane is detached now')
+
+  // Docking brings it back inside the app window and closes the detached one.
+  test.runAction('dock')
+  assert.equal(opened[0].window.closed, true, 'the detached window is closed')
+  assert.equal(test.shared.popupMode, 'panel', 'and the pane is docked again')
+  test.closeWindow()
+})
+
+  await check('the composer button toggles the docked pane, and never stacks a window', () => {
+  // `window.open(url, "same-name")` returns a NEW blank window for a name that already
+  // exists, so opening on every click left one empty frame per click. The button is a
+  // switch over the docked pane, so it has nothing to stack.
+  const test = harness.bundle.__test
+  test.closeWindow()
+  opened.length = 0
+  assert.equal(test.toggleWindow(), true, 'the first call opens the pane')
+  assert.equal(test.shared.popupMode, 'panel', 'as the docked pane')
+  assert.equal(opened.length, 0, 'with no OS window involved')
+  assert.equal(test.toggleWindow(), false, 'the second call closes it')
+  assert.equal(test.isWindowOpen(), false, 'and it really is closed')
+  assert.equal(test.toggleWindow(), true, 'and a third opens again')
+  assert.equal(opened.length, 0, 'still without an OS window')
+
+  // Opening starts at the project list, whatever the pane was showing before: reopening
+  // onto an old conversation's detail is what "点进去显示的不是该项目的详情" described.
   test.navigate({ level: 'session', cwd: 'C:\\q', sessionId: 's9' })
   test.closeWindow()
   test.toggleWindow()
@@ -1517,6 +1533,71 @@ check('keeps the same hook order whether the data sources are there or not', () 
   harness.context.sessionStorage.removeItem(marker)
 })
 
+  await check('offers the footer actions, and sync reloads only for a different bundle', async () => {
+  // 同步更新 asks the host which bundle is on disk — the page cannot find that out for
+  // itself, its own bundle URL being on the app's custom scheme — and 独立窗口 / 嵌回窗口
+  // swaps between the docked pane and a window that can leave the app.
+  const test = bundle.__test
+  const marker = 'dsh-task-tracker:reloadedFor'
+  harness.setNavReply(undefined)
+  test.closeWindow()
+  feedSnapshots({ byId: { s1: { id: 's1', title: 'a session', cwd: 'C:\\p' } } }, undefined)
+  test.navigate({ level: 'projects' })
+  await tickOnce()
+
+  test.openDocked()
+  await tickOnce()
+  assert.equal(
+    test.shared.view.actions.map((action) => action.id).join(','),
+    'sync,detach',
+    'docked, the footer offers sync and detach: ' + JSON.stringify(test.shared.view.actions),
+  )
+  assert.equal(test.shared.view.actions[0].label, '同步更新', 'labelled in the active language')
+
+  test.runAction('detach')
+  await tickOnce()
+  assert.equal(
+    test.shared.view.actions.map((action) => action.id).join(','),
+    'sync,dock',
+    'detached, the second button offers to come back: ' + JSON.stringify(test.shared.view.actions),
+  )
+
+  // The same bundle on disk: a note, and no reload.
+  harness.context.sessionStorage.removeItem(marker)
+  harness.context.localStorage.setItem('dsh-task-tracker.diagnostics.v1', '{}')
+  harness.reloads.length = 0
+  harness.setHostClientVersion(bundle.VERSION)
+  test.runAction('sync')
+  await settle()
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 0, 'the same bundle is not reloaded')
+  assert.equal(test.shared.syncNote.text, '已是最新', 'it says so instead: ' + test.shared.syncNote.text)
+
+  // A different bundle on disk: reload, and say what is happening while it does.
+  harness.setHostClientVersion('0.9.9')
+  test.runAction('sync')
+  await settle()
+  assert.equal(test.shared.syncNote.text, '正在同步…', 'the note reports the sync')
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 1, 'and the page reloads once')
+  const record = JSON.parse(harness.context.localStorage.getItem('dsh-task-tracker.diagnostics.v1'))
+  assert.equal(record.reloadReason, 'manual-sync', 'recording that a person asked for it')
+
+  // A host that cannot answer says so rather than pretending.
+  harness.context.sessionStorage.removeItem(marker)
+  harness.reloads.length = 0
+  harness.setBundleFetchFails(false)
+  harness.setHostClientVersion(undefined)
+  test.runAction('sync')
+  await settle()
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 0, 'an unreachable host is not a reason to reload')
+  assert.equal(test.shared.syncNote.text, 'host 未响应', 'and it is reported: ' + test.shared.syncNote.text)
+
+  harness.context.sessionStorage.removeItem(marker)
+  test.closeWindow()
+})
+
   await check('reloads when the host reports a different bundle on disk', async () => {
   // The page keeps running the bundle it booted with (the module table rejects a second
   // registration for the same id), and the app page's custom scheme answers a fetch of
@@ -1594,9 +1675,11 @@ check('keeps the same hook order whether the data sources are there or not', () 
 })
 
   await check('shows the clicked session, driving the pane the way a click does', async () => {
-  // The existing level test calls `navigate()`/`composeView()` directly; this one goes
-  // through the real handlers the app popup installs, because that is the path a user's
-  // click takes and the one nothing covered.
+  // The level test calls `navigate()`/`composeView()` directly; this one goes through the
+  // real click handlers a rendered pane installs, because that is the path a user's click
+  // takes. The pane's default home is inside the app window, so it is detached first to
+  // reach the app-owned window's document — both surfaces are built by `buildPanel` and
+  // wire exactly the same handlers.
   const test = bundle.__test
   harness.setNavReply(undefined)
   test.closeWindow()
@@ -1617,6 +1700,9 @@ check('keeps the same hook order whether the data sources are there or not', () 
   await tickOnce()
 
   assert.equal(test.toggleWindow(), true, 'the button opens the pane')
+  // The pane opens docked inside the app window; detaching is what creates the app-owned
+  // window document this test drives.
+  test.runAction('detach')
   await tickOnce()
   const popupDoc = opened[opened.length - 1].window.document
   const projectRows = clickableRows(popupDoc)
