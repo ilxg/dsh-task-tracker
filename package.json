@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-tracker",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "DSH 任务追踪：输入框左侧的任务面板按钮，用独立窗口实时查看任务完成进度，并在任务跑完、出错或需要你选择时发送通知（自己中断的不报）",
   "type": "module",

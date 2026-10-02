@@ -1637,14 +1637,14 @@ check('keeps the same hook order whether the data sources are there or not', () 
   harness.context.localStorage.setItem('dsh-task-tracker.diagnostics.v1', '{}')
   harness.context.sessionStorage.removeItem(marker)
   harness.reloads.length = 0
-  harness.setHostClientVersion('0.2.0')
+  harness.setHostClientVersion('99.0.0')
   feedSnapshots({ byId: { s1: { id: 's1', title: 'a session', cwd: 'C:\\p' } } }, undefined)
   await tickOnce()
   assert.equal(harness.reloads.length, 0, 'nothing is reloaded before the timer runs')
   harness.runTimeouts()
   assert.equal(harness.reloads.length, 1, 'the tick reloads the page once: ' + harness.reloads.length)
   assert.equal(diagnostics().reloadReason, 'host-reported', 'and records why')
-  assert.equal(harness.context.sessionStorage.getItem(marker), '0.2.0', 'remembering which version it reloaded for')
+  assert.equal(harness.context.sessionStorage.getItem(marker), '99.0.0', 'remembering which version it reloaded for')
 
   // A host that reports the version this page is already running changes nothing.
   harness.reloads.length = 0
