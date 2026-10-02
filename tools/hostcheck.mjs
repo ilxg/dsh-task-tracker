@@ -13,11 +13,14 @@
 
 import { apply, PORTS, SERVICE_ID } from '../lib/host.js'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { zstdCompressSync } from 'node:zlib'
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)))
 
 const withWindow = process.argv.includes('--open')
 const failures = []
@@ -278,6 +281,28 @@ await check('reads why a turn ended, and when it began, out of the session log',
     process.env.DSH_HOME = previousHome
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+await check('reports the browser half\'s version on disk', async () => {
+  // This is what tells a page that the bundle it booted with has been replaced. The page
+  // cannot find that out for itself: its own bundle URL lives on the app's custom scheme,
+  // where the fetch answers 404. So it asks here, on the poll it already makes.
+  const ping = await request(port, '/ping')
+  const probe = join(root, 'lib', 'client.js')
+  const original = readFileSync(probe, 'utf8')
+  const expected = /var VERSION = "([^"]+)"/u.exec(original)?.[1]
+  assert.ok(expected !== undefined, 'the browser half must stamp a version')
+  assert.equal(ping.body?.clientVersion, expected, 'the host reports the stamp from lib/client.js')
+  // Read fresh rather than at start-up: a rewritten file has to show up on its own.
+  try {
+    writeFileSync(probe, original.replace(/var VERSION = "[^"]+"/u, 'var VERSION = "9.9.9"'))
+    const after = await request(port, '/ping')
+    assert.equal(after.body?.clientVersion, '9.9.9', 'a rewritten bundle is reported without a restart')
+  } finally {
+    writeFileSync(probe, original)
+  }
+  const restored = await request(port, '/ping')
+  assert.equal(restored.body?.clientVersion, expected, 'and the original comes back')
 })
 
 await check('serves the opaque window page', async () => {

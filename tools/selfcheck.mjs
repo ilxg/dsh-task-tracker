@@ -176,6 +176,14 @@ function loadBundle() {
   let notifyDelivers = true
   // Every browser-API notification the client constructed, so the fallback is observable.
   const notifications = []
+  // Every `location.reload()` the client asked for, and the version stamp of the bundle
+  // this page is being served (the boot-graph fetch is what reads it).
+  const reloads = []
+  let servedBundleVersion
+  // Refuse the boot-graph bundle fetch, the way a custom-scheme page can.
+  let bundleFetchFails = false
+  // What `/ping` reports as the version of the browser half on disk.
+  let hostClientVersion
   // What `/turn` answers with. `reason: undefined` stands for "the host could not
   // tell", which the client must treat as a real finish rather than swallow;
   // `startedAt` is the log's own epoch stamp for the turn in flight.
@@ -288,6 +296,9 @@ function loadBundle() {
     },
     fetch: (url, init) => {
       requests.push({ url: String(url), init })
+      if (bundleFetchFails && String(url).includes('/plugins/')) {
+        return Promise.reject(new Error('refused to fetch a dsh-app: URL'))
+      }
       if (String(url).endsWith('/turn')) {
         return Promise.resolve({
           ok: true,
@@ -312,9 +323,15 @@ function loadBundle() {
       return Promise.resolve({
         ok: true,
         status: 200,
+        // The bundle fetch reads the served version out of the script body; without one
+        // set, the body carries no stamp and the check reads "cannot tell".
+        text: () => Promise.resolve(
+          servedBundleVersion === undefined ? '/* unversioned */' : 'var VERSION = "' + servedBundleVersion + '"',
+        ),
         json: () => Promise.resolve({
           app: 'dsh-task-tracker',
           version: '0.1.0',
+          clientVersion: hostClientVersion,
           ok: true,
           toast: notifyDelivers,
           nav: navReply === undefined ? null : navReply.nav,
@@ -345,6 +362,13 @@ function loadBundle() {
     },
     document,
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    location: {
+      reload: () => {
+        reloads.push('reload')
+      },
+    },
+    // The boot graph the page reads to find its own bundle URL.
+    __DSH_BOOT__: { entries: [{ id: 'dsh-task-tracker', url: 'plugins/dsh-task-tracker/client.js' }] },
     Notification: Object.assign(
       function Notification(title, options) {
         notifications.push({ title: title, options: options })
@@ -486,7 +510,20 @@ function loadBundle() {
     setNotifyDelivers: (value) => {
       notifyDelivers = value
     },
+    /** What version stamp the served bundle carries (`undefined` = cannot be read). */
+    setServedVersion: (value) => {
+      servedBundleVersion = value
+    },
+    /** Make the boot-graph bundle fetch fail, as a custom-scheme page can. */
+    setBundleFetchFails: (value) => {
+      bundleFetchFails = value
+    },
+    /** What `/ping` reports as the browser half's version on disk. */
+    setHostClientVersion: (value) => {
+      hostClientVersion = value
+    },
     notifications,
+    reloads,
     /** Set what `/turn` reports as the reason for the finished turn. */
     setTurnEndReason: (value) => {
       turnReason = value
@@ -1292,7 +1329,7 @@ check('keeps the same hook order whether the data sources are there or not', () 
 })
 
 //#region hot reload and the click path
-  await check('lets the newest copy of the plugin own the one-second tick', () => {
+  await check('lets each activation own the one-second tick, and never leaves two', () => {
   // The bug this pins down: an updated bundle is loaded into a page whose PREVIOUS
   // copy is still running, and that copy's interval kept composing the view — so the
   // fix on disk was live in the file, live in the served bundle, and never live in the
@@ -1303,22 +1340,35 @@ check('keeps the same hook order whether the data sources are there or not', () 
   const cellCount = cells.length
   assert.equal(ticks().length, 1, 'exactly one tick is armed to begin with: ' + ticks().length)
 
-  // A newer copy activates: it takes the timer over and leaves exactly one.
+  // Every activation takes the timer over and leaves exactly one behind.
   harness.applyTo()
-  assert.equal(ticks().length, 1, 'the new copy leaves exactly one tick: ' + ticks().length)
+  assert.equal(ticks().length, 1, 'a re-activation leaves exactly one tick: ' + ticks().length)
   assert.equal(test.shared.tickOwner, bundle.VERSION, 'and it is the owner now')
 
-  // An OLDER copy activating late must not take the timer back.
+  // Even a previous owner whose stamp looks NEWER does not block it. What the loader
+  // just loaded IS the newer file; refusing on a version comparison is what wedged the
+  // page when the stamp moved backwards (a renumbering, or a rollback), leaving the old
+  // interval
+  // driving with nothing able to heal it.
   test.shared.tickOwner = '9.9.9'
   harness.applyTo()
-  assert.equal(ticks().length, 1, 'a newer owner keeps its tick')
-  assert.equal(test.shared.tickOwner, '9.9.9', 'and the stale copy does not claim it')
+  assert.equal(ticks().length, 1, 'an older-looking previous owner leaves one tick: ' + ticks().length)
+  assert.equal(test.shared.tickOwner, bundle.VERSION, 'the newest activation owns the tick')
+  cells.length = cellCount
+})
 
-  // ... while an older owner IS taken over from.
+  await check('records which copy it took the tick from', () => {
+  // A page really can run two copies; which one drives has to be answerable from disk.
+  const test = harness.bundle.__test
+  const cellCount = cells.length
   test.shared.tickOwner = '0.0.1'
   harness.applyTo()
-  assert.equal(test.shared.tickOwner, bundle.VERSION, 'an older owner is taken over from')
   cells.length = cellCount
+  const record = JSON.parse(harness.context.localStorage.getItem('dsh-task-tracker.diagnostics.v1'))
+  assert.equal(record.tickOwner, bundle.VERSION, 'the record names the owner: ' + record.tickOwner)
+  assert.equal(record.tickTakenFrom, '0.0.1', 'and who held it before')
+  assert.equal(record.tickLooksNewer, true, 'including whether the stamp moved forward')
+  assert.equal(record.tickNotTakenBy, undefined, 'nothing is left claiming a refusal')
 })
 
   await check('orders versions by number, not by text', () => {
@@ -1327,6 +1377,80 @@ check('keeps the same hook order whether the data sources are there or not', () 
   assert.equal(test.isNewerVersion('0.9.0', '0.10.0'), false, '0.9.0 is older than 0.10.0')
   assert.equal(test.isNewerVersion('0.1', '0.1.0'), false, 'a missing segment counts as zero')
   assert.equal(test.isNewerVersion('0.1.1', '0.1'), true, 'and a longer version can still win')
+})
+
+  await check('reloads once when the bundle being served is not this one', async () => {
+  // The desktop page binds no reload shortcut and the module table rejects a second
+  // registration for the same id, so reloading itself is the only way a page picks up a
+  // new bundle. It must fire once per version — and it must SAY WHY when it cannot even
+  // read the served bundle, because a refused fetch on the app's custom scheme looks
+  // exactly like a bundle that simply carries no version stamp.
+  const test = bundle.__test
+  const marker = 'dsh-task-tracker:reloadedFor'
+  const diagnostics = () => JSON.parse(harness.context.localStorage.getItem('dsh-task-tracker.diagnostics.v1'))
+
+  harness.context.localStorage.setItem('dsh-task-tracker.diagnostics.v1', '{}')
+  harness.context.sessionStorage.removeItem(marker)
+  harness.reloads.length = 0
+  harness.setServedVersion('9.9.9')
+  await test.checkForNewerBundle()
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 1, 'a different served version reloads the page once')
+  assert.equal(harness.context.sessionStorage.getItem(marker), '9.9.9', 'and the version is remembered')
+  assert.equal(diagnostics().reloadingFor, '9.9.9', 'the reason is recorded')
+
+  // The same version again: the page is already loading it.
+  harness.reloads.length = 0
+  await test.checkForNewerBundle()
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 0, 'the same version is not reloaded twice')
+  assert.equal(diagnostics().reloadSkippedFor, '9.9.9', 'and the skip is recorded')
+
+  // Nothing readable at all: recorded rather than swallowed.
+  harness.context.sessionStorage.removeItem(marker)
+  harness.reloads.length = 0
+  harness.setBundleFetchFails(true)
+  await test.checkForNewerBundle()
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 0, 'an unreadable bundle is not a reason to reload')
+  assert.match(
+    String(diagnostics().servedVersionError),
+    /refused/u,
+    'the failure is recorded: ' + String(diagnostics().servedVersionError),
+  )
+  harness.setBundleFetchFails(false)
+  harness.setServedVersion(undefined)
+  harness.context.sessionStorage.removeItem(marker)
+})
+
+  await check('reloads when the host reports a different bundle on disk', async () => {
+  // The page keeps running the bundle it booted with (the module table rejects a second
+  // registration for the same id), and the app page's custom scheme answers a fetch of
+  // that bundle with 404 — so the host, which reads lib/client.js directly, is what can
+  // tell the page that a reload is due.
+  const test = bundle.__test
+  const marker = 'dsh-task-tracker:reloadedFor'
+  const diagnostics = () => JSON.parse(harness.context.localStorage.getItem('dsh-task-tracker.diagnostics.v1'))
+  harness.context.localStorage.setItem('dsh-task-tracker.diagnostics.v1', '{}')
+  harness.context.sessionStorage.removeItem(marker)
+  harness.reloads.length = 0
+  harness.setHostClientVersion('0.2.0')
+  feedSnapshots({ byId: { s1: { id: 's1', title: 'a session', cwd: 'C:\\p' } } }, undefined)
+  await tickOnce()
+  assert.equal(harness.reloads.length, 0, 'nothing is reloaded before the timer runs')
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 1, 'the tick reloads the page once: ' + harness.reloads.length)
+  assert.equal(diagnostics().reloadReason, 'host-reported', 'and records why')
+  assert.equal(harness.context.sessionStorage.getItem(marker), '0.2.0', 'remembering which version it reloaded for')
+
+  // A host that reports the version this page is already running changes nothing.
+  harness.reloads.length = 0
+  harness.setHostClientVersion(bundle.VERSION)
+  await tickOnce()
+  harness.runTimeouts()
+  assert.equal(harness.reloads.length, 0, 'a matching version reloads nothing')
+  harness.setHostClientVersion(undefined)
+  harness.context.sessionStorage.removeItem(marker)
 })
 
   await check('does not replay a click the previous page already applied', async () => {
